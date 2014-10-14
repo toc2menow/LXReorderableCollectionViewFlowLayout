@@ -9,6 +9,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
+#define LX_FRAMES_PER_SECOND 60.0
+
 #ifndef CGGEOMETRY_LXSUPPORT_H_
 CG_INLINE CGPoint
 LXS_CGPointAdd(CGPoint point1, CGPoint point2) {
@@ -43,22 +45,18 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
 
 @interface UICollectionViewCell (LXReorderableCollectionViewFlowLayout)
 
-- (UIView *)LX_snapshotView;
+- (UIImage *)LX_rasterizedImage;
 
 @end
 
 @implementation UICollectionViewCell (LXReorderableCollectionViewFlowLayout)
 
-- (UIView *)LX_snapshotView {
-    if ([self respondsToSelector:@selector(snapshotViewAfterScreenUpdates:)]) {
-        return [self snapshotViewAfterScreenUpdates:YES];
-    } else {
-        UIGraphicsBeginImageContextWithOptions(self.bounds.size, self.isOpaque, 0.0f);
-        [self.layer renderInContext:UIGraphicsGetCurrentContext()];
-        UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        return [[UIImageView alloc] initWithImage:image];
-    }
+- (UIImage *)LX_rasterizedImage {
+    UIGraphicsBeginImageContextWithOptions(self.bounds.size, self.isOpaque, 0.0f);
+    [self.layer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
 }
 
 @end
@@ -102,7 +100,7 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
                                                                     action:@selector(handlePanGesture:)];
     _panGestureRecognizer.delegate = self;
     [self.collectionView addGestureRecognizer:_panGestureRecognizer];
-
+    
     // Useful in multiple scenarios: one common scenario being when the Notification Center drawer is pulled down
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleApplicationWillResignActive:) name: UIApplicationWillResignActiveNotification object:nil];
 }
@@ -149,21 +147,37 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
     NSIndexPath *newIndexPath = [self.collectionView indexPathForItemAtPoint:self.currentView.center];
     NSIndexPath *previousIndexPath = self.selectedItemIndexPath;
     
-    if ((newIndexPath == nil) || [newIndexPath isEqual:previousIndexPath]) {
-        return;
-    }
-    
     if ([self.dataSource respondsToSelector:@selector(collectionView:itemAtIndexPath:canMoveToIndexPath:)] &&
         ![self.dataSource collectionView:self.collectionView itemAtIndexPath:previousIndexPath canMoveToIndexPath:newIndexPath]) {
         return;
     }
     
+    if (newIndexPath == nil) {
+        return;
+    }
+    
     self.selectedItemIndexPath = newIndexPath;
+    
+    UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:newIndexPath];
+    if (self.currentView.center.y > self.currentViewCenter.y + 10
+        && self.currentView.center.y < self.currentViewCenter.y + self.currentView.frame.size.height * 0.6
+        && abs(self.currentView.frame.size.width - self.currentView.center.x) < 60
+        && self.delegate) {
+        [self.delegate collectionView:self.collectionView layout:self canNextLine:previousIndexPath];
+    } else if (cell != nil
+               && self.currentView.center.x > cell.center.x + cell.frame.size.width * 0.1
+               && self.delegate) {
+        [self.delegate collectionView:self.collectionView layout:self canMerge:previousIndexPath withIndexPath:newIndexPath];
+    }
+    
+    if ([newIndexPath isEqual:previousIndexPath]) {
+        return;
+    }
     
     if ([self.dataSource respondsToSelector:@selector(collectionView:itemAtIndexPath:willMoveToIndexPath:)]) {
         [self.dataSource collectionView:self.collectionView itemAtIndexPath:previousIndexPath willMoveToIndexPath:newIndexPath];
     }
-
+    
     __weak typeof(self) weakSelf = self;
     [self.collectionView performBatchUpdates:^{
         __strong typeof(self) strongSelf = weakSelf;
@@ -177,6 +191,7 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
             [strongSelf.dataSource collectionView:strongSelf.collectionView itemAtIndexPath:previousIndexPath didMoveToIndexPath:newIndexPath];
         }
     }];
+    
 }
 
 - (void)invalidatesScrollTimer {
@@ -189,17 +204,17 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
 - (void)setupScrollTimerInDirection:(LXScrollingDirection)direction {
     if (!self.displayLink.paused) {
         LXScrollingDirection oldDirection = [self.displayLink.LX_userInfo[kLXScrollingDirectionKey] integerValue];
-
+        
         if (direction == oldDirection) {
             return;
         }
     }
     
     [self invalidatesScrollTimer];
-
+    
     self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(handleScroll:)];
     self.displayLink.LX_userInfo = @{ kLXScrollingDirectionKey : @(direction) };
-
+    
     [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 
@@ -215,25 +230,24 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
     CGSize frameSize = self.collectionView.bounds.size;
     CGSize contentSize = self.collectionView.contentSize;
     CGPoint contentOffset = self.collectionView.contentOffset;
-    UIEdgeInsets contentInset = self.collectionView.contentInset;
     // Important to have an integer `distance` as the `contentOffset` property automatically gets rounded
     // and it would diverge from the view's center resulting in a "cell is slipping away under finger"-bug.
-    CGFloat distance = rint(self.scrollingSpeed * displayLink.duration);
+    CGFloat distance = rint(self.scrollingSpeed / LX_FRAMES_PER_SECOND);
     CGPoint translation = CGPointZero;
     
     switch(direction) {
         case LXScrollingDirectionUp: {
             distance = -distance;
-            CGFloat minY = 0.0f - contentInset.top;
+            CGFloat minY = 0.0f;
             
             if ((contentOffset.y + distance) <= minY) {
-                distance = -contentOffset.y - contentInset.top;
+                distance = -contentOffset.y;
             }
             
             translation = CGPointMake(0.0f, distance);
         } break;
         case LXScrollingDirectionDown: {
-            CGFloat maxY = MAX(contentSize.height, frameSize.height) - frameSize.height + contentInset.bottom;
+            CGFloat maxY = MAX(contentSize.height, frameSize.height) - frameSize.height;
             
             if ((contentOffset.y + distance) >= maxY) {
                 distance = maxY - contentOffset.y;
@@ -243,16 +257,16 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
         } break;
         case LXScrollingDirectionLeft: {
             distance = -distance;
-            CGFloat minX = 0.0f - contentInset.left;
+            CGFloat minX = 0.0f;
             
             if ((contentOffset.x + distance) <= minX) {
-                distance = -contentOffset.x - contentInset.left;
+                distance = -contentOffset.x;
             }
             
             translation = CGPointMake(distance, 0.0f);
         } break;
         case LXScrollingDirectionRight: {
-            CGFloat maxX = MAX(contentSize.width, frameSize.width) - frameSize.width + contentInset.right;
+            CGFloat maxX = MAX(contentSize.width, frameSize.width) - frameSize.width;
             
             if ((contentOffset.x + distance) >= maxX) {
                 distance = maxX - contentOffset.x;
@@ -277,7 +291,7 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
             NSIndexPath *currentIndexPath = [self.collectionView indexPathForItemAtPoint:[gestureRecognizer locationInView:self.collectionView]];
             
             if ([self.dataSource respondsToSelector:@selector(collectionView:canMoveItemAtIndexPath:)] &&
-               ![self.dataSource collectionView:self.collectionView canMoveItemAtIndexPath:currentIndexPath]) {
+                ![self.dataSource collectionView:self.collectionView canMoveItemAtIndexPath:currentIndexPath]) {
                 return;
             }
             
@@ -292,12 +306,12 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
             self.currentView = [[UIView alloc] initWithFrame:collectionViewCell.frame];
             
             collectionViewCell.highlighted = YES;
-            UIView *highlightedImageView = [collectionViewCell LX_snapshotView];
+            UIImageView *highlightedImageView = [[UIImageView alloc] initWithImage:[collectionViewCell LX_rasterizedImage]];
             highlightedImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
             highlightedImageView.alpha = 1.0f;
             
             collectionViewCell.highlighted = NO;
-            UIView *imageView = [collectionViewCell LX_snapshotView];
+            UIImageView *imageView = [[UIImageView alloc] initWithImage:[collectionViewCell LX_rasterizedImage]];
             imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
             imageView.alpha = 0.0f;
             
@@ -315,7 +329,7 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
              animations:^{
                  __strong typeof(self) strongSelf = weakSelf;
                  if (strongSelf) {
-                     strongSelf.currentView.transform = CGAffineTransformMakeScale(1.1f, 1.1f);
+                     strongSelf.currentView.transform = CGAffineTransformMakeScale(0.8f, 0.8f);
                      highlightedImageView.alpha = 0.0f;
                      imageView.alpha = 1.0f;
                  }
