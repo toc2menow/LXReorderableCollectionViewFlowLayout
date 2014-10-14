@@ -160,14 +160,14 @@ static NSString * const kLXCollectionViewKeyPath = @"collectionView";
     
     UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:newIndexPath];
     if (self.currentView.center.y > self.currentViewCenter.y + 10
-        && self.currentView.center.y < self.currentViewCenter.y + self.currentView.frame.size.height * 0.6
-        && abs(self.currentView.frame.size.width - self.currentView.center.x) < 60
+        && self.currentView.center.y < self.currentViewCenter.y + self.currentView.frame.size.height * 0.5
+        && abs(self.collectionView.frame.size.width * 0.5 - self.currentView.center.x) < 60
         && self.delegate) {
-        [self.delegate collectionView:self.collectionView layout:self canNextLine:previousIndexPath];
+        [self.delegate collectionView:self.collectionView layout:self divideItemAtIndexPath:previousIndexPath fromIndxPath:newIndexPath];
     } else if (cell != nil
                && self.currentView.center.x > cell.center.x + cell.frame.size.width * 0.1
                && self.delegate) {
-        [self.delegate collectionView:self.collectionView layout:self canMerge:previousIndexPath withIndexPath:newIndexPath];
+        [self.delegate collectionView:self.collectionView layout:self mergeItemAtIndexPath:previousIndexPath withIndexPath:newIndexPath];
     }
     
     if ([newIndexPath isEqual:previousIndexPath]) {
